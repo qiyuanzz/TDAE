@@ -14,6 +14,8 @@ einops>=0.7
 torch-geometric>=2.4
 swanlab>=0.3
 lifelines>=0.27
+# TransMIL aggregator dependency (Shao et al., NeurIPS 2021).
+nystrom-attention>=0.0.11
 # Trident is installed separately in /opt/conda/envs/trident from /mnt/Xsky/zqb/TRIDENT.
 geopandas>=1.1
 segmentation-models-pytorch>=0.5

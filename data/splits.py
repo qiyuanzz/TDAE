@@ -9,10 +9,6 @@ from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from .utils import ensure_columns, read_table
 
 
-SURVIVAL_N_BINS = 4
-SURVIVAL_BIN_EPS = 1e-6
-
-
 def _as_str_list(values: Iterable[str] | None) -> list[str] | None:
     if values is None:
         return None
@@ -22,29 +18,6 @@ def _as_str_list(values: Iterable[str] | None) -> list[str] | None:
 def _alias(raw_label: object, label_aliases: dict[str, str] | None = None) -> str:
     raw = str(raw_label)
     return {str(k): str(v) for k, v in (label_aliases or {}).items()}.get(raw, raw)
-
-
-def _assign_survival_time_bins(cases: pd.DataFrame, n_bins: int = SURVIVAL_N_BINS, eps: float = SURVIVAL_BIN_EPS) -> pd.DataFrame:
-    """Assign MCAT/SurvPath-style discrete time bins.
-
-    The bin edges are fit on uncensored/event cases, then all cases are assigned
-    to those fixed edges with left-closed intervals.
-    """
-    uncensored = cases[cases['event'] > 0]
-    source = uncensored if len(uncensored) >= n_bins else cases
-    try:
-        _, bin_edges = pd.qcut(source['survival_days'], q=n_bins, retbins=True, labels=False)
-    except ValueError:
-        _, bin_edges = pd.cut(source['survival_days'], bins=n_bins, retbins=True, labels=False, include_lowest=True)
-    bin_edges = bin_edges.copy()
-    bin_edges[0] = cases['survival_days'].min() - eps
-    bin_edges[-1] = cases['survival_days'].max() + eps
-    time_bins = pd.cut(cases['survival_days'], bins=bin_edges, labels=False, right=False, include_lowest=True)
-    if time_bins.isna().any():
-        raise ValueError('Failed to assign survival time bins for all cases.')
-    cases = cases.copy()
-    cases['time_bin'] = time_bins.astype(int)
-    return cases
 
 
 def _case_table(
@@ -66,7 +39,6 @@ def _case_table(
         cases['case_submitter_id'] = cases['case_submitter_id'].astype(str)
         cases['event'] = cases['event'].astype(int)
         cases['censorship'] = (1 - cases['event']).astype(int)
-        cases = _assign_survival_time_bins(cases)
     elif task == 'classification':
         ensure_columns(cohort, [label_column], 'cohort_csv')
         include = _as_str_list(include_labels)
@@ -154,14 +126,14 @@ def generate_case_splits(
         pieces = []
         for split_name, frame in split_frames:
             if str(task).lower() == 'survival':
-                part = frame[['case_submitter_id', 'time_bin', 'survival_days', 'event', 'censorship']].copy()
+                part = frame[['case_submitter_id', 'survival_days', 'event', 'censorship']].copy()
             else:
                 part = frame[['case_submitter_id', 'label']].copy()
             part['split'] = split_name
             pieces.append(part)
         fold_df = pd.concat(pieces, ignore_index=True)
         if str(task).lower() == 'survival':
-            columns = ['case_submitter_id', 'split', 'time_bin', 'survival_days', 'event', 'censorship']
+            columns = ['case_submitter_id', 'split', 'survival_days', 'event', 'censorship']
         else:
             columns = ['case_submitter_id', 'split', 'label']
         fold_df = fold_df[columns].sort_values(['split', 'case_submitter_id'])

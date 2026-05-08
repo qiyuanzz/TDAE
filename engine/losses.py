@@ -64,12 +64,13 @@ class NLLSurvLoss(nn.Module):
 
 
 def build_survival_time_bin_cutpoints(labels: list[dict[str, torch.Tensor]], n_bins: int) -> torch.Tensor:
-    """Fit MCAT/SurvPath-style discrete survival bins with ``pd.qcut``.
+    """Fit MCAT/SurvPath-style discrete survival bin cutpoints with ``pd.qcut``.
 
-    The labels passed here should represent the full fold cohort, meaning train
-    and validation cases before the KFold split is applied to the current fold.
-    Following MCAT/SurvPath, quantile boundaries are fit on uncensored/event
-    cases and then used for all cases.
+    Caller MUST pass the labels of the **current fold's training cases only**
+    (no validation cases), matching the convention in MCAT (Chen et al., ICCV
+    2021) and SurvPath (Jaume et al., CVPR 2024). Quantile boundaries are
+    computed from uncensored / event cases (``event == 1``) and then applied
+    identically to train and val splits at loss time.
     """
     if n_bins < 2:
         raise ValueError(f'n_bins must be >= 2 for nll_surv, got {n_bins}')
@@ -79,6 +80,7 @@ def build_survival_time_bin_cutpoints(labels: list[dict[str, torch.Tensor]], n_b
     events = torch.stack([label['event'].detach().float().cpu().view(()) for label in labels])
     source_times = times[events > 0]
     if source_times.numel() < n_bins:
+        # Fallback: low event rate (e.g. early debug) — relax to all train cases.
         source_times = times
     if source_times.numel() < n_bins:
         raise ValueError(f'Need at least {n_bins} survival times to build {n_bins} qcut bins, got {source_times.numel()}.')

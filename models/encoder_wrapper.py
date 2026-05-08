@@ -37,7 +37,9 @@ class IdentityEncoder(nn.Module):
 
 
 class LightEncoderWrapper(nn.Module):
-    """Wrap a ViT-like encoder and return CLS token after the first truncate_layer blocks."""
+    """Wrap a ViT-like encoder and return the post-norm CLS token after the first
+    ``truncate_layer`` blocks. Applying ``model.norm`` keeps the intermediate
+    feature in the same numerical space as Trident's full encoder output."""
 
     def __init__(self, base_model: nn.Module, truncate_layer: int = 3) -> None:
         super().__init__()
@@ -57,6 +59,8 @@ class LightEncoderWrapper(nn.Module):
             x = model.pos_drop(x)
         for block in model.blocks[: self.truncate_layer]:
             x = block(x)
+        if hasattr(model, "norm"):
+            x = model.norm(x)
         return x[:, 0]
 
 

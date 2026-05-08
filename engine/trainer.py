@@ -80,31 +80,34 @@ class TDAETrainer:
         self.loss_fn = TDAELoss(lambda_budget, mu_diversity, config.task)
         self.survival_loss = NLLSurvLoss(alpha=config.alpha_surv) if config.task == 'survival' and config.bag_loss == 'nll_surv' else None
         self.time_bin_cutpoints = (
-            None
-            if self.survival_loss is None or self._datasets_have_time_bins()
-            else self._build_time_bin_cutpoints()
+            self._build_time_bin_cutpoints()
+            if self.survival_loss is not None
+            else None
         )
 
-    def _datasets_have_time_bins(self) -> bool:
-        return all(hasattr(dataset, 'slides') and 'time_bin' in dataset.slides.columns for dataset in (self.train_dataset, self.val_dataset))
-
     def _build_time_bin_cutpoints(self) -> torch.Tensor:
+        """MCAT/SurvPath-style cutpoints: train fold + uncensored (event==1) only.
+
+        Quantile cutpoints are fit on the current fold's training cases with
+        observed events, then applied identically to train and val cases at
+        loss time. Validation labels never participate in the cutpoint fit.
+        """
         labels_by_case: OrderedDict[str, dict[str, torch.Tensor]] = OrderedDict()
-        for dataset in (self.train_dataset, self.val_dataset):
-            if hasattr(dataset, 'slides') and {'event', 'survival_days'}.issubset(dataset.slides.columns):
-                rows = dataset.slides.drop_duplicates('case_submitter_id')
-                for _, row in rows.iterrows():
-                    case_id = str(row['case_submitter_id'])
-                    if case_id not in labels_by_case:
-                        labels_by_case[case_id] = {
-                            'event': torch.tensor(float(row['event']), dtype=torch.float32),
-                            'time': torch.tensor(float(row['survival_days']), dtype=torch.float32),
-                        }
-            else:
-                groups = case_index_groups(dataset)
-                for case_id, indices in groups.items():
-                    if indices and case_id not in labels_by_case:
-                        labels_by_case[case_id] = dataset[indices[0]]['label']
+        dataset = self.train_dataset
+        if hasattr(dataset, 'slides') and {'event', 'survival_days'}.issubset(dataset.slides.columns):
+            rows = dataset.slides.drop_duplicates('case_submitter_id')
+            for _, row in rows.iterrows():
+                case_id = str(row['case_submitter_id'])
+                if case_id not in labels_by_case:
+                    labels_by_case[case_id] = {
+                        'event': torch.tensor(float(row['event']), dtype=torch.float32),
+                        'time': torch.tensor(float(row['survival_days']), dtype=torch.float32),
+                    }
+        else:
+            groups = case_index_groups(dataset)
+            for case_id, indices in groups.items():
+                if indices and case_id not in labels_by_case:
+                    labels_by_case[case_id] = dataset[indices[0]]['label']
         labels = list(labels_by_case.values())
         return build_survival_time_bin_cutpoints(labels, self.config.n_classes)
 
@@ -156,12 +159,9 @@ class TDAETrainer:
             if self.survival_loss is None:
                 raise RuntimeError('nll_surv requires survival_loss.')
             logits = torch.stack([out['logits'].flatten() for out in outputs], dim=0)
-            if all('time_bin' in label for label in labels):
-                time_bins = torch.stack([label['time_bin'].to(self.device).view(()) for label in labels]).long()
-            else:
-                if self.time_bin_cutpoints is None:
-                    raise RuntimeError('nll_surv requires time_bin labels or time_bin_cutpoints.')
-                time_bins = discretize_survival_times(times, self.time_bin_cutpoints.to(self.device), self.config.n_classes)
+            if self.time_bin_cutpoints is None:
+                raise RuntimeError('nll_surv requires train-fold time_bin_cutpoints.')
+            time_bins = discretize_survival_times(times, self.time_bin_cutpoints.to(self.device), self.config.n_classes)
             if all('censorship' in label for label in labels):
                 censorships = torch.stack([label['censorship'].to(self.device).view(()) for label in labels]).long()
             else:
@@ -195,27 +195,58 @@ class TDAETrainer:
             result[f'level_{idx}'] = value
         return result
 
+    # Offset added to per-slide grid coordinates when concatenating multiple
+    # slides of the same case into a single bag. Must be larger than any
+    # plausible intra-slide grid extent so the kNN graph never connects
+    # patches from different slides. WSIs at 224px @ 20x have grid extents
+    # well below 1000, so 1e5 is safe.
+    _CASE_SLIDE_GRID_OFFSET: int = 100_000
+
     def _forward_case(self, dataset, indices: list[int], tau: float, warmup: bool, c_target: float) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        slide_outputs = []
-        label = None
-        for idx in indices:
+        """MCAT/SurvPath-style case bag.
+
+        Concatenate all slides of the same case into one bag and run a single
+        forward pass. Per-slide grid coordinates are shifted by a large
+        per-slide offset so the propagator's kNN graph cannot wire patches
+        across slides.
+        """
+        if not indices:
+            raise ValueError('Cannot train survival case with no slides.')
+        light_chunks: list[torch.Tensor] = []
+        medium_chunks: list[torch.Tensor] = []
+        full_chunks: list[torch.Tensor] = []
+        coord_chunks: list[torch.Tensor] = []
+        label: dict[str, torch.Tensor] | None = None
+        for slide_pos, idx in enumerate(indices):
             sample = dataset[idx]
-            output = self._forward_sample(sample, tau=tau, warmup=warmup, c_target=c_target)
-            slide_outputs.append(output)
             if label is None:
                 label = sample['label']
+            light_chunks.append(sample['light_feats'].to(self.device))
+            medium_chunks.append(sample['medium_feats'].to(self.device))
+            full_chunks.append(sample['full_feats'].to(self.device))
+            coords = sample['grid_indices'].to(self.device).long().clone()
+            coords = coords + slide_pos * self._CASE_SLIDE_GRID_OFFSET
+            coord_chunks.append(coords)
         if label is None:
             raise ValueError('Cannot train survival case with no slides.')
-        case_logits = torch.stack([out['logits'].flatten() for out in slide_outputs], dim=0).mean(dim=0)
+        case_sample = {
+            'light_feats': torch.cat(light_chunks, dim=0),
+            'medium_feats': torch.cat(medium_chunks, dim=0),
+            'full_feats': torch.cat(full_chunks, dim=0),
+            'grid_indices': torch.cat(coord_chunks, dim=0),
+        }
+        output = self._forward_sample(case_sample, tau=tau, warmup=warmup, c_target=c_target)
+        l_diversity = (
+            self.loss_fn._diversity_loss(output.get('gate_soft'), output.get('grid_indices'))
+            if self._uses_budget_losses()
+            else output['avg_cost'].new_zeros(())
+        )
         return {
-            'logits': case_logits,
-            'avg_cost': torch.stack([out['avg_cost'].float() for out in slide_outputs]).mean(),
-            'level_dist': torch.stack([out['level_dist'] for out in slide_outputs]).mean(dim=0),
-            'gate_probs': torch.stack([out['gate_probs'].float().mean() for out in slide_outputs]).mean().view(1),
-            'l_diversity': torch.stack([
-                self.loss_fn._diversity_loss(out.get('gate_soft'), out.get('grid_indices'))
-                for out in slide_outputs
-            ]).mean() if self._uses_budget_losses() else slide_outputs[0]['avg_cost'].new_zeros(()),
+            'logits': output['logits'].flatten(),
+            'avg_cost': output['avg_cost'].float(),
+            'level_dist': output['level_dist'],
+            'gate_probs': output['gate_probs'].float().mean().view(1),
+            'l_diversity': l_diversity,
         }, label
 
     def _survival_step(self, batch: list[dict[str, Any]], tau: float, c_target: float, warmup: bool) -> dict[str, float]:
