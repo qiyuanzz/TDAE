@@ -1,0 +1,5 @@
+case_submitter_id,split,label
+TCGA-06-6390,train,GBM
+TCGA-06-0877,val,GBM
+TCGA-HT-7468,train,LGG
+TCGA-HT-7690,val,LGG

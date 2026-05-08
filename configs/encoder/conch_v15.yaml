@@ -1,0 +1,10 @@
+encoder_name: "conch_v15"
+model_path: "/mnt/Xsky/models/PFM/conchv1_5"
+d_full: 768
+d_light: 1024
+d_medium: 1024
+truncate_layer: 3
+medium_layer: 12
+full_batch_size: 128
+light_batch_size: 256
+flops_cost: [0.125, 0.125, 0.5, 1.0]

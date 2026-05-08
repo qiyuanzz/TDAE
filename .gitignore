@@ -1,0 +1,88 @@
+# Python runtime/cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local environments
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+conda-meta/
+
+# IDE/editor metadata
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project outputs and experiment artifacts
+outputs/
+log/
+logs/
+log_new/
+runs/
+wandb/
+tensorboard/
+mlruns/
+checkpoints/
+results/
+tmp/
+temp/
+
+# Model weights and large binary artifacts
+*.ckpt
+*.pt
+*.pth
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.safetensors
+models/trident_ckpts/
+
+# WSI data, patch banks, and extracted feature banks
+patches/
+features/
+feature_bank/
+preprocess/
+data/patches/
+data/features/
+data/preprocess/
+data/csvs/
+
+# Generated split backups and temporary split variants
+data/splits/**/*backup*/
+data/splits/**/*_backup_*/
+data/splits/**/*backup*
+
+# Internal tests/smoke artifacts
+tests/
+
+# Temporary backup files
+*.bak
+*.bak_*
+*.backup
+*.orig
+*.rej
+*~
+
+# Logs and process files
+*.log
+*.out
+*.err
+*.pid
+
+# Local research notes that may contain unpublished ideas
+docs/TDAE_Research_Plan.md
+docs/TDAE_Code_Plan.md

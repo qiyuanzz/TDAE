@@ -1,0 +1,10 @@
+encoder_name: "virchow2"
+model_path: "/mnt/Xsky/models/PFM/Virchow2"
+d_full: 1280
+d_light: 1280
+d_medium: 1280
+truncate_layer: 3
+medium_layer: 12
+full_batch_size: 64
+light_batch_size: 256
+flops_cost: [0.094, 0.094, 0.375, 1.0]
