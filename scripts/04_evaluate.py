@@ -57,11 +57,18 @@ def main() -> None:
         label_aliases=cfg.get('label_aliases'),
     )
     sample = dataset[0]
+    # For survival NLL, the model predicts hazard logits over n_bins (default 4),
+    # not the dataset's "n_classes" (which is 1 for survival).
+    bag_loss = cfg.get('bag_loss', 'nll_surv' if task == 'survival' else None)
+    if task == 'survival' and bag_loss == 'nll_surv':
+        model_n_classes = int(cfg.get('n_classes', 4))
+    else:
+        model_n_classes = int(dataset.n_classes)
     model = TDAE(
         d_light=sample['light_feats'].shape[1],
         d_medium=sample['medium_feats'].shape[1],
         d_full=sample['full_feats'].shape[1],
-        n_classes=dataset.n_classes,
+        n_classes=model_n_classes,
         aggregator_type=cfg.get('aggregator', 'abmil'),
         gating_hidden=int(cfg.get('gating_hidden', 256)),
         pos_encoding_dim=int(cfg.get('pos_encoding_dim', 64)),

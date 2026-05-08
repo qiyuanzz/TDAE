@@ -66,11 +66,10 @@ class FeatureDataset(Dataset):
             fold_slides['survival_days'] = pd.to_numeric(fold_slides['survival_days'], errors='coerce')
             fold_slides = fold_slides.dropna(subset=['event', 'survival_days'])
             fold_slides = fold_slides[fold_slides['survival_days'] > 0].copy()
-            if 'time_bin' in folds.columns:
-                fold_bins = folds[['case_submitter_id', 'time_bin']].drop_duplicates('case_submitter_id').copy()
-                fold_bins['case_submitter_id'] = fold_bins['case_submitter_id'].astype(str)
-                fold_bins['time_bin'] = pd.to_numeric(fold_bins['time_bin'], errors='coerce')
-                fold_slides = fold_slides.merge(fold_bins, on='case_submitter_id', how='left')
+            # NOTE: time_bin is no longer materialized in fold_csv. The trainer
+            # fits cutpoints on the train fold uncensored cases at runtime
+            # (MCAT/SurvPath convention) and discretizes train+val with the
+            # same cutpoints to avoid leakage.
             self.class_names = ['risk']
             self.label_map: dict[str, int] = {}
             self.n_classes = 1
@@ -144,8 +143,6 @@ class FeatureDataset(Dataset):
                 'time': torch.tensor(float(row['survival_days']), dtype=torch.float32),
                 'censorship': torch.tensor(1.0 - event, dtype=torch.float32),
             }
-            if 'time_bin' in row and pd.notna(row['time_bin']):
-                label['time_bin'] = torch.tensor(int(row['time_bin']), dtype=torch.long)
 
         sample = {
             'label': label,

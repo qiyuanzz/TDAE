@@ -90,7 +90,14 @@ def _ckpt_path(trident_encoder: str, user_path: str | None) -> str | None:
 
 
 class ViTIntermediateModel(nn.Module):
-    """Return CLS token after a selected transformer block for timm ViT-like encoders."""
+    """Return CLS token after a selected transformer block for timm ViT-like encoders.
+
+    The final ``model.norm`` LayerNorm is applied to the partial output so the
+    intermediate feature lives in the same numerical space as Trident's full
+    encoder output (which is post-norm via ``model.forward_features``). This
+    keeps cosine distance / k-means / centroid statistics consistent across
+    L1, L2, L3 features used by the Phase 0 allocator.
+    """
 
     def __init__(self, model: nn.Module, layer: int) -> None:
         super().__init__()
@@ -117,6 +124,10 @@ class ViTIntermediateModel(nn.Module):
         max_layer = min(self.layer, len(model.blocks))
         for block in model.blocks[:max_layer]:
             x = block(x)
+        # Apply the encoder's final LayerNorm so intermediate CLS lives in the
+        # same post-norm space as Trident's full feature output.
+        if hasattr(model, "norm"):
+            x = model.norm(x)
         if x.dim() == 3:
             return x[:, 0]
         if x.dim() == 4:
@@ -173,9 +184,16 @@ class MultiLevelPatchEncoder(nn.Module):
             self.embedding_dim = int(embedding_dim) * 3
 
     def _make_hook(self, layer: int):
+        # Apply the encoder's final LayerNorm to the captured intermediate
+        # feature so light/medium are in the same post-norm space as the full
+        # CLS token (Trident's default output is post-norm).
+        norm = getattr(self.model, "norm", None)
+
         def hook(_module, _inputs, output):
             if isinstance(output, (tuple, list)):
                 output = output[0]
+            if norm is not None:
+                output = norm(output)
             self._captures[layer] = _cls_or_pool(output)
 
         return hook

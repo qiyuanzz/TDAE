@@ -121,12 +121,6 @@ def case_label_list(dataset, groups: dict[str, list[int]]) -> list[dict[str, tor
     return [dataset[indices[0]]["label"] for indices in groups.values() if indices]
 
 
-def dataset_has_time_bins(dataset) -> bool:
-    if hasattr(dataset, "slides"):
-        return "time_bin" in dataset.slides.columns
-    return all("time_bin" in sample["label"] for sample in dataset)
-
-
 def fold_case_label_list(*dataset_groups: tuple[Any, dict[str, list[int]]]) -> list[dict[str, torch.Tensor]]:
     labels_by_case: OrderedDict[str, dict[str, torch.Tensor]] = OrderedDict()
     for dataset, groups in dataset_groups:
@@ -213,12 +207,9 @@ def nll_batch_loss(
     logits_tensor = torch.stack([item.flatten() for item in logits], dim=0)
     times = torch.stack([label["time"].to(device).view(()) for label in labels])
     events = torch.stack([label["event"].to(device).view(()) for label in labels])
-    if all("time_bin" in label for label in labels):
-        time_bins = torch.stack([label["time_bin"].to(device).view(()) for label in labels]).long()
-    else:
-        if cutpoints is None:
-            raise RuntimeError("nll_surv requires time_bin labels or cutpoints.")
-        time_bins = discretize_survival_times(times, cutpoints.to(device), n_bins)
+    if cutpoints is None:
+        raise RuntimeError("nll_surv requires train-fold cutpoints.")
+    time_bins = discretize_survival_times(times, cutpoints.to(device), n_bins)
     if all("censorship" in label for label in labels):
         censorships = torch.stack([label["censorship"].to(device).view(()) for label in labels]).long()
     else:
@@ -241,7 +232,6 @@ def evaluate(
     case_logits = []
     case_times = []
     case_events = []
-    case_time_bins = []
     case_censorships = []
     n_slides = 0
     for indices in groups.values():
@@ -249,8 +239,6 @@ def evaluate(
         case_logits.append(logits.detach())
         case_times.append(label["time"].detach().cpu().view(()))
         case_events.append(label["event"].detach().cpu().view(()))
-        if "time_bin" in label:
-            case_time_bins.append(label["time_bin"].detach().cpu().view(()))
         if "censorship" in label:
             case_censorships.append(label["censorship"].detach().cpu().view(()))
         n_slides += len(indices)
@@ -263,12 +251,9 @@ def evaluate(
         if loss_fn is None:
             raise ValueError("nll_surv evaluation requires loss_fn.")
         risks = survival_logits_to_risk(logits_tensor).detach().cpu()
-        if len(case_time_bins) == len(case_logits):
-            time_bins = torch.stack(case_time_bins).long()
-        else:
-            if cutpoints is None:
-                raise RuntimeError("nll_surv evaluation requires time_bin labels or cutpoints.")
-            time_bins = discretize_survival_times(times, cutpoints, n_bins)
+        if cutpoints is None:
+            raise RuntimeError("nll_surv evaluation requires train-fold cutpoints.")
+        time_bins = discretize_survival_times(times, cutpoints, n_bins)
         if len(case_censorships) == len(case_logits):
             censorships = torch.stack(case_censorships).long()
         else:
@@ -592,15 +577,13 @@ def main() -> None:
     early_stopping_min_delta = float(args.early_stopping_min_delta)
     early_stopping_monitor = args.early_stopping_monitor
     loss_fn = NLLSurvLoss(alpha=float(args.alpha_surv)) if args.bag_loss == "nll_surv" else None
-    has_time_bin_labels = (
-        args.bag_loss == "nll_surv"
-        and dataset_has_time_bins(train_data)
-        and dataset_has_time_bins(val_data)
-    )
+    # MCAT/SurvPath convention: fit cutpoints on the current fold's TRAIN
+    # cases only (uncensored events), then apply the same cutpoints to val.
+    # Never read time_bin from the fold csv even if a stale column is present.
     time_bin_cutpoints = None
-    if args.bag_loss == "nll_surv" and not has_time_bin_labels:
+    if args.bag_loss == "nll_surv":
         time_bin_cutpoints = build_time_bin_cutpoints(
-            fold_case_label_list((train_data, train_groups), (val_data, val_groups)),
+            fold_case_label_list((train_data, train_groups)),
             model_n_classes,
         )
     optimizer_cls = torch.optim.AdamW if args.opt == "adamw" else torch.optim.Adam
