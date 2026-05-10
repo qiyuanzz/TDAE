@@ -1,0 +1,40 @@
+# Data
+wsi_root: "/mnt/Archive/Dataset/GDC_DATA/GDC_DATA"
+feature_bank_root: "/mnt/Xsky/zqb/TCGA_WSI_feature_bank"
+patch_root: "/mnt/Xsky/zqb/TCGA_WSI_feature_bank/GBMLGG/preprocess"
+feature_dir: "/mnt/Xsky/zqb/TCGA_WSI_feature_bank/GBMLGG/features"
+result_dir: "/mnt/Xsky/zqb/TDAE/outputs"
+cohort_csv: "/mnt/Xsky/zqb/TDAE/metadata/csvs/TCGA_GBMLGG_survival_dx.csv"
+split_dir: "/mnt/Xsky/zqb/TDAE/metadata/splits"
+patch_size: 224
+magnification: 20.0
+target_mpp: 0.5
+
+# Task
+task: "survival"
+label_column: null
+
+# Encoder
+encoder_name: "uni2h"
+trident_python: "/opt/conda/envs/trident/bin/python"
+
+# Model
+aggregator: "abmil"
+mil_hidden: 256
+
+# Training
+task_epochs: 20
+bag_loss: "nll_surv"
+alpha_surv: 0.0
+n_classes: 4
+lr_task: 2e-4
+lr_aggregator: 2e-4
+weight_decay: 1e-5
+survival_batch_size: 32
+early_stopping: false
+model_selection: "last_epoch"
+
+# Evaluation
+eval_every: 1
+n_splits: 5
+seed: 1

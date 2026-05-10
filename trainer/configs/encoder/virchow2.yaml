@@ -1,0 +1,4 @@
+encoder_name: "virchow2"
+model_path: "/mnt/Xsky/models/PFM/Virchow2"
+d_full: 1280
+full_batch_size: 64

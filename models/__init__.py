@@ -1,6 +1,6 @@
-from .feature_propagator import FeaturePropagator
-from .gating_network import GatingNetwork
-from .mil_aggregators import ABMIL, CLAM, TransMIL, build_aggregator
-from .tdae import TDAE
+from .abmil import ABMIL
+from .builder import build_aggregator
+from .clam import CLAM
+from .transmil import TransMIL
 
-__all__ = ["ABMIL", "CLAM", "TransMIL", "build_aggregator", "FeaturePropagator", "GatingNetwork", "TDAE"]
+__all__ = ["ABMIL", "CLAM", "TransMIL", "build_aggregator"]

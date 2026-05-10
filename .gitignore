@@ -56,15 +56,14 @@ patches/
 features/
 feature_bank/
 preprocess/
-data/patches/
-data/features/
-data/preprocess/
-data/csvs/
+metadata/patches/
+metadata/features/
+metadata/preprocess/
 
 # Generated split backups and temporary split variants
-data/splits/**/*backup*/
-data/splits/**/*_backup_*/
-data/splits/**/*backup*
+metadata/splits/**/*backup*/
+metadata/splits/**/*_backup_*/
+metadata/splits/**/*backup*
 
 # Internal tests/smoke artifacts
 tests/

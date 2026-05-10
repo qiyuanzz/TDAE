@@ -1,0 +1,9 @@
+cohort: "LUAD"
+cohort_csv: "/mnt/Xsky/zqb/TDAE/metadata/csvs/TCGA_LUAD_survival_dx.csv"
+tasks:
+  classification:
+    enabled: false
+  survival:
+    enabled: true
+    task: "survival"
+    label_column: "cancer_code"

@@ -1,0 +1,4 @@
+encoder_name: "uni2"
+model_path: "/mnt/Xsky/models/PFM/UNI2-h"
+d_full: 1536
+full_batch_size: 64

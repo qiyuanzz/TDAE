@@ -12,29 +12,29 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 import torch
 
 import _bootstrap  # noqa: F401
-from data.feature_dataset import FeatureDataset
-from data.task_config import (
+from trainer.datasets.feature_dataset import FeatureDataset
+from trainer.task_config import (
     load_dataset_config,
     load_encoder_config,
     load_yaml,
     merge_config,
     resolve_feature_dir,
 )
-from engine.losses import NLLSurvLoss, cox_partial_likelihood
-from models.mil_aggregators import ABMIL
-from utils.metrics import survival_c_index
+from trainer.losses import NLLSurvLoss, cox_partial_likelihood
+from models.builder import build_aggregator
+from trainer.metrics import survival_c_index
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Fast pure ABMIL random patch-drop survival baseline.")
-    parser.add_argument("--config", default="configs/brca_uni2_phase0.yaml")
+    parser = argparse.ArgumentParser(description="Pure MIL random patch-drop survival baseline.")
+    parser.add_argument("--config", default="trainer/configs/brca_uni2_mil.yaml")
     parser.add_argument("--cohort", default="BRCA")
     parser.add_argument("--task", default="survival", choices=["survival"])
     parser.add_argument("--encoder", default="uni2")
+    parser.add_argument("--aggregator", choices=["abmil", "transmil", "clam"], default=None)
     parser.add_argument("--fold", type=int, default=0)
     parser.add_argument("--patch_drop_ratio", type=float, default=0.0)
     parser.add_argument("--patch_drop_seed", type=int, default=1)
@@ -117,52 +117,6 @@ def permute_case_labels(cached: list[dict[str, Any]], seed: int) -> None:
             cached[idx]["label"] = clone_label(source_labels[case_id])
 
 
-def case_label_list(dataset, groups: dict[str, list[int]]) -> list[dict[str, torch.Tensor]]:
-    return [dataset[indices[0]]["label"] for indices in groups.values() if indices]
-
-
-def fold_case_label_list(*dataset_groups: tuple[Any, dict[str, list[int]]]) -> list[dict[str, torch.Tensor]]:
-    labels_by_case: OrderedDict[str, dict[str, torch.Tensor]] = OrderedDict()
-    for dataset, groups in dataset_groups:
-        for case_id, indices in groups.items():
-            if indices and case_id not in labels_by_case:
-                labels_by_case[case_id] = dataset[indices[0]]["label"]
-    return list(labels_by_case.values())
-
-
-def build_time_bin_cutpoints(labels: list[dict[str, torch.Tensor]], n_bins: int) -> torch.Tensor:
-    if n_bins < 2:
-        raise ValueError(f"n_bins must be >= 2 for nll_surv, got {n_bins}")
-    times = torch.stack([label["time"].detach().float().cpu().view(()) for label in labels])
-    events = torch.stack([label["event"].detach().float().cpu().view(()) for label in labels])
-    if times.numel() == 0:
-        raise ValueError("Cannot build survival time bins from an empty fold cohort.")
-    source_times = times[events > 0]
-    if source_times.numel() < n_bins:
-        source_times = times
-    if source_times.numel() < n_bins:
-        raise ValueError(f"Need at least {n_bins} survival times to build {n_bins} qcut bins, got {source_times.numel()}.")
-    try:
-        _, bin_edges = pd.qcut(source_times.numpy(), q=n_bins, labels=False, retbins=True)
-        cutpoints = torch.tensor(bin_edges[1:-1], dtype=torch.float32)
-    except ValueError:
-        quantiles = torch.linspace(0.0, 1.0, n_bins + 1, dtype=torch.float32)[1:-1]
-        cutpoints = torch.quantile(source_times.float(), quantiles)
-    if cutpoints.numel() != n_bins - 1:
-        raise ValueError(f"Expected {n_bins - 1} cutpoints for {n_bins} bins, got {cutpoints.numel()}.")
-    return cutpoints.float()
-
-
-def discretize_survival_times(times: torch.Tensor, cutpoints: torch.Tensor, n_bins: int) -> torch.Tensor:
-    if n_bins < 2:
-        raise ValueError(f"n_bins must be >= 2 for nll_surv, got {n_bins}")
-    if cutpoints.numel() != n_bins - 1:
-        raise ValueError(f"Expected {n_bins - 1} cutpoints for {n_bins} bins, got {cutpoints.numel()}")
-    flat_times = times.float().view(-1)
-    cutpoints = cutpoints.to(device=flat_times.device, dtype=flat_times.dtype)
-    return torch.bucketize(flat_times, cutpoints, right=False).clamp(0, n_bins - 1).long()
-
-
 def survival_logits_to_risk(logits: torch.Tensor) -> torch.Tensor:
     logits = logits.float()
     if logits.ndim == 1:
@@ -172,7 +126,7 @@ def survival_logits_to_risk(logits: torch.Tensor) -> torch.Tensor:
     return -survival.sum(dim=1)
 
 
-def forward_case(model: ABMIL, dataset, indices: list[int], device: torch.device) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+def forward_case(model: torch.nn.Module, dataset, indices: list[int], device: torch.device) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     case_feats = []
     label = None
     for idx in indices:
@@ -200,16 +154,14 @@ def nll_batch_loss(
     logits: list[torch.Tensor],
     labels: list[dict[str, torch.Tensor]],
     device: torch.device,
-    cutpoints: torch.Tensor | None,
     loss_fn: NLLSurvLoss,
     n_bins: int,
 ) -> torch.Tensor:
     logits_tensor = torch.stack([item.flatten() for item in logits], dim=0)
-    times = torch.stack([label["time"].to(device).view(()) for label in labels])
     events = torch.stack([label["event"].to(device).view(()) for label in labels])
-    if cutpoints is None:
-        raise RuntimeError("nll_surv requires train-fold cutpoints.")
-    time_bins = discretize_survival_times(times, cutpoints.to(device), n_bins)
+    if not all("time_bin" in label for label in labels):
+        raise RuntimeError("nll_surv requires FeatureDataset labels with global time_bin.")
+    time_bins = torch.stack([label["time_bin"].to(device).view(()) for label in labels]).long()
     if all("censorship" in label for label in labels):
         censorships = torch.stack([label["censorship"].to(device).view(()) for label in labels]).long()
     else:
@@ -219,11 +171,10 @@ def nll_batch_loss(
 
 @torch.no_grad()
 def evaluate(
-    model: ABMIL,
+    model: torch.nn.Module,
     dataset,
     device: torch.device,
     bag_loss: str = "cox",
-    cutpoints: torch.Tensor | None = None,
     loss_fn: NLLSurvLoss | None = None,
     n_bins: int = 4,
 ) -> dict[str, float]:
@@ -231,6 +182,7 @@ def evaluate(
     groups = case_index_groups(dataset)
     case_logits = []
     case_times = []
+    case_time_bins = []
     case_events = []
     case_censorships = []
     n_slides = 0
@@ -238,6 +190,8 @@ def evaluate(
         logits, label = forward_case(model, dataset, indices, device)
         case_logits.append(logits.detach())
         case_times.append(label["time"].detach().cpu().view(()))
+        if "time_bin" in label:
+            case_time_bins.append(label["time_bin"].detach().cpu().view(()))
         case_events.append(label["event"].detach().cpu().view(()))
         if "censorship" in label:
             case_censorships.append(label["censorship"].detach().cpu().view(()))
@@ -251,9 +205,9 @@ def evaluate(
         if loss_fn is None:
             raise ValueError("nll_surv evaluation requires loss_fn.")
         risks = survival_logits_to_risk(logits_tensor).detach().cpu()
-        if cutpoints is None:
-            raise RuntimeError("nll_surv evaluation requires train-fold cutpoints.")
-        time_bins = discretize_survival_times(times, cutpoints, n_bins)
+        if len(case_time_bins) != len(case_logits):
+            raise RuntimeError("nll_surv evaluation requires FeatureDataset labels with global time_bin.")
+        time_bins = torch.stack(case_time_bins).long()
         if len(case_censorships) == len(case_logits):
             censorships = torch.stack(case_censorships).long()
         else:
@@ -444,8 +398,8 @@ def float_tag(value: float) -> str:
     return safe_path_name(text)
 
 
-def setting_label(keep_ratio: float, survival_batch_size: int, lr: float) -> str:
-    return safe_path_name(f"wsi_ABMIL_{keep_label(keep_ratio)}_gc_{survival_batch_size}_lr_{float_tag(lr)}")
+def setting_label(aggregator: str, keep_ratio: float, survival_batch_size: int, lr: float) -> str:
+    return safe_path_name(f"wsi_{aggregator.upper()}_{keep_label(keep_ratio)}_gc_{survival_batch_size}_lr_{float_tag(lr)}")
 
 
 def default_experiment_tag(run_tag: str, seed: int, fold: int) -> str:
@@ -453,8 +407,9 @@ def default_experiment_tag(run_tag: str, seed: int, fold: int) -> str:
     for suffix in (f"_seed{seed}_fold{fold}", f"_fold{fold}", f"_seed{seed}"):
         if tag.endswith(suffix):
             tag = tag[: -len(suffix)]
-    if tag.startswith("abmil_random_keep"):
-        return "abmil_random_keep"
+    for prefix in ("abmil_random_keep", "transmil_random_keep", "clam_random_keep"):
+        if tag.startswith(prefix):
+            return prefix
     return safe_path_name(tag)
 
 
@@ -467,6 +422,7 @@ def resolve_output_dir(
     experiment_tag: str | None,
     seed: int,
     fold: int,
+    aggregator: str,
     keep_ratio: float,
     survival_batch_size: int,
     lr: float,
@@ -477,7 +433,7 @@ def resolve_output_dir(
         legacy_tag = safe_path_name(run_tag)
         return base / run_tag / f"fold_{fold}", legacy_tag, legacy_tag
     exp_tag = safe_path_name(experiment_tag) if experiment_tag else default_experiment_tag(run_tag, seed, fold)
-    setting = setting_label(keep_ratio, survival_batch_size, lr)
+    setting = setting_label(aggregator, keep_ratio, survival_batch_size, lr)
     out_dir = base / exp_tag / setting / f"seed_{seed}" / f"fold_{fold}"
     return out_dir, exp_tag, setting
 
@@ -493,7 +449,7 @@ def main() -> None:
     args = build_parser().parse_args()
     torch_num_threads = args.torch_num_threads
     if torch_num_threads is None:
-        env_threads = os.environ.get("TDAE_TORCH_NUM_THREADS") or os.environ.get("OMP_NUM_THREADS")
+        env_threads = os.environ.get("MIL_TORCH_NUM_THREADS") or os.environ.get("OMP_NUM_THREADS")
         torch_num_threads = int(env_threads) if env_threads else None
     if torch_num_threads is not None and torch_num_threads > 0:
         torch.set_num_threads(int(torch_num_threads))
@@ -509,10 +465,16 @@ def main() -> None:
     cfg = load_yaml(config_path)
     cfg = merge_config(cfg, load_dataset_config(args.cohort, args.task, root=root))
     cfg = merge_config(cfg, load_encoder_config(args.encoder, root=root))
+    aggregator_name = str(args.aggregator or cfg.get("aggregator", "abmil")).lower()
+    if aggregator_name not in {"abmil", "transmil", "clam"}:
+        raise ValueError(f"Unsupported MIL aggregator: {aggregator_name}")
+    if args.bag_loss == "nll_surv" and args.n_classes < 2:
+        raise ValueError(f"--n_classes must be >= 2 for nll_surv, got {args.n_classes}")
+    model_n_classes = int(args.n_classes if args.bag_loss == "nll_surv" else 1)
 
     feature_dir = resolve_feature_dir(cfg, args.cohort)
     feature_encoder = cfg.get("encoder_name", args.encoder)
-    split_dir = Path(cfg.get("split_dir", root / "data" / "splits"))
+    split_dir = Path(cfg.get("split_dir", root / "metadata" / "splits"))
     fold_csv = split_dir / args.cohort / args.task / f"fold_{args.fold}.csv"
     if not fold_csv.exists():
         fold_csv = split_dir / args.cohort / f"fold_{args.fold}.csv"
@@ -522,27 +484,20 @@ def main() -> None:
         "patch_drop_seed": args.patch_drop_seed,
         "seed": args.seed,
         "feature_keys": ("full",),
+        "n_time_bins": model_n_classes,
     }
-    train_ds = FeatureDataset(
+    fold_ds = FeatureDataset(
         feature_dir,
         cfg["cohort_csv"],
         fold_csv,
         feature_encoder,
-        "train",
+        "all",
         args.task,
         cfg.get("label_column", "cancer_code"),
         **dataset_kwargs,
     )
-    val_ds = FeatureDataset(
-        feature_dir,
-        cfg["cohort_csv"],
-        fold_csv,
-        feature_encoder,
-        "val",
-        args.task,
-        cfg.get("label_column", "cancer_code"),
-        **dataset_kwargs,
-    )
+    train_ds = fold_ds.split_dataset("train")
+    val_ds = fold_ds.split_dataset("val")
 
     if args.no_cache_features:
         if args.permute_train_labels:
@@ -559,14 +514,16 @@ def main() -> None:
     train_groups = case_index_groups(train_data)
     train_case_ids = list(train_groups)
     val_groups = case_index_groups(val_data)
-    if args.bag_loss == "nll_surv" and args.n_classes < 2:
-        raise ValueError(f"--n_classes must be >= 2 for nll_surv, got {args.n_classes}")
 
     sample = train_data[0]
     d_full = int(sample["full_feats"].shape[1])
     device = torch.device(args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu")
-    model_n_classes = int(args.n_classes if args.bag_loss == "nll_surv" else 1)
-    model = ABMIL(d_in=d_full, d_hidden=int(cfg.get("d_gat_hidden", 256)), n_classes=model_n_classes).to(device)
+    model = build_aggregator(
+        aggregator_name,
+        d_in=d_full,
+        d_hidden=int(cfg.get("mil_hidden", 256)),
+        n_classes=model_n_classes,
+    ).to(device)
 
     epochs = int(args.epochs)
     lr = float(args.lr)
@@ -577,20 +534,12 @@ def main() -> None:
     early_stopping_min_delta = float(args.early_stopping_min_delta)
     early_stopping_monitor = args.early_stopping_monitor
     loss_fn = NLLSurvLoss(alpha=float(args.alpha_surv)) if args.bag_loss == "nll_surv" else None
-    # MCAT/SurvPath convention: fit cutpoints on the current fold's TRAIN
-    # cases only (uncensored events), then apply the same cutpoints to val.
-    # Never read time_bin from the fold csv even if a stale column is present.
-    time_bin_cutpoints = None
-    if args.bag_loss == "nll_surv":
-        time_bin_cutpoints = build_time_bin_cutpoints(
-            fold_case_label_list((train_data, train_groups)),
-            model_n_classes,
-        )
+    time_bin_cutpoints = fold_ds.time_bin_cutpoints if args.bag_loss == "nll_surv" else None
     optimizer_cls = torch.optim.AdamW if args.opt == "adamw" else torch.optim.Adam
     optimizer = optimizer_cls(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     keep_ratio = 1.0 - float(args.patch_drop_ratio)
-    run_tag = args.run_tag or f"abmil_random_keep{keep_ratio:.2f}_seed{args.seed}_fold{args.fold}"
+    run_tag = args.run_tag or f"{aggregator_name}_random_keep{keep_ratio:.2f}_seed{args.seed}_fold{args.fold}"
     out_dir, experiment_tag, setting = resolve_output_dir(
         Path(cfg.get("result_dir", root / "outputs")),
         args.cohort,
@@ -600,6 +549,7 @@ def main() -> None:
         args.experiment_tag,
         args.seed,
         args.fold,
+        aggregator_name,
         keep_ratio,
         survival_batch_size,
         lr,
@@ -617,6 +567,7 @@ def main() -> None:
                 "setting": setting,
                 "output_layout": args.output_layout,
                 "out_dir": str(out_dir),
+                "aggregator": aggregator_name,
                 "fold": args.fold,
                 "keep_ratio": keep_ratio,
                 "patch_drop_ratio": args.patch_drop_ratio,
@@ -674,7 +625,7 @@ def main() -> None:
             if len(pending_logits) >= update_batch_size:
                 if args.bag_loss == "nll_surv":
                     assert loss_fn is not None
-                    loss = nll_batch_loss(pending_logits, pending_labels, device, time_bin_cutpoints, loss_fn, model_n_classes)
+                    loss = nll_batch_loss(pending_logits, pending_labels, device, loss_fn, model_n_classes)
                 else:
                     loss = cox_batch_loss(pending_logits, pending_labels, device)
                 optimizer.zero_grad(set_to_none=True)
@@ -687,7 +638,7 @@ def main() -> None:
         if pending_logits and (args.bag_loss == "nll_surv" or len(pending_logits) > 1):
             if args.bag_loss == "nll_surv":
                 assert loss_fn is not None
-                loss = nll_batch_loss(pending_logits, pending_labels, device, time_bin_cutpoints, loss_fn, model_n_classes)
+                loss = nll_batch_loss(pending_logits, pending_labels, device, loss_fn, model_n_classes)
             else:
                 loss = cox_batch_loss(pending_logits, pending_labels, device)
             optimizer.zero_grad(set_to_none=True)
@@ -701,7 +652,6 @@ def main() -> None:
             val_data,
             device,
             bag_loss=args.bag_loss,
-            cutpoints=time_bin_cutpoints,
             loss_fn=loss_fn,
             n_bins=model_n_classes,
         )
@@ -726,7 +676,7 @@ def main() -> None:
             epochs_without_improvement = 0
             torch.save(
                 {"model": best_state, "best_epoch": best_epoch, "best_metrics": best_row, "history": history},
-                out_dir / "abmil_best.pt",
+                out_dir / f"{aggregator_name}_best.pt",
             )
         else:
             epochs_without_improvement += 1
@@ -759,7 +709,6 @@ def main() -> None:
             val_data,
             device,
             bag_loss=args.bag_loss,
-            cutpoints=time_bin_cutpoints,
             loss_fn=loss_fn,
             n_bins=model_n_classes,
         )
@@ -780,7 +729,7 @@ def main() -> None:
         best_state = cpu_state_dict(model)
     torch.save(
         {"model": best_state, "best_epoch": best_epoch, "best_metrics": best_row, "history": history},
-        out_dir / "abmil_best.pt",
+        out_dir / f"{aggregator_name}_best.pt",
     )
 
     metrics = report_row.copy()
@@ -793,6 +742,7 @@ def main() -> None:
         "output_layout": args.output_layout,
         "out_dir": str(out_dir),
         "fold": args.fold,
+        "aggregator": aggregator_name,
         "seed": args.seed,
         "patch_drop_seed": args.patch_drop_seed,
         "keep_ratio": keep_ratio,
@@ -837,8 +787,8 @@ def main() -> None:
         "feature_dir": str(feature_dir),
         **metrics,
     }
-    torch.save({"model": model.state_dict(), "summary": summary, "history": history}, out_dir / "abmil_last.pt")
-    torch.save({"model": best_state, "summary": summary, "history": history}, out_dir / "abmil_best.pt")
+    torch.save({"model": model.state_dict(), "summary": summary, "history": history}, out_dir / f"{aggregator_name}_last.pt")
+    torch.save({"model": best_state, "summary": summary, "history": history}, out_dir / f"{aggregator_name}_best.pt")
     with (out_dir / "summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, ensure_ascii=False)
     write_seed_fold_metrics(out_dir.parent)

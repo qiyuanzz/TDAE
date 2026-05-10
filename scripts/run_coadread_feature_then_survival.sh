@@ -4,6 +4,7 @@ set -u
 cd /mnt/Xsky/zqb/TDAE || exit 1
 
 PY=${PY:-/opt/conda/envs/trident/bin/python}
+TRIDENT_REPO=${TRIDENT_REPO:-/mnt/Xsky/zqb/TRIDENT}
 GPUS=(${GPUS:-4 5 6 7})
 SHARDS=(${SHARDS:-0 1 2 3})
 NUM_SHARDS=${NUM_SHARDS:-4}
@@ -12,8 +13,8 @@ FEATURE_MAX_WORKERS=${FEATURE_MAX_WORKERS:-4}
 PATCH_BATCH_SIZE=${PATCH_BATCH_SIZE:-64}
 FEATURE_BATCH_SIZE=${FEATURE_BATCH_SIZE:-64}
 
-COADREAD_CSV=${COADREAD_CSV:-data/csvs/TCGA_COADREAD_survival_dx.csv}
-COADREAD_EXTRACTED_CSV=${COADREAD_EXTRACTED_CSV:-data/csvs/TCGA_COADREAD_survival_dx_extracted.csv}
+COADREAD_CSV=${COADREAD_CSV:-metadata/csvs/TCGA_COADREAD_survival_dx.csv}
+COADREAD_EXTRACTED_CSV=${COADREAD_EXTRACTED_CSV:-metadata/csvs/TCGA_COADREAD_survival_dx_extracted.csv}
 COADREAD_PATCH_ROOT=${COADREAD_PATCH_ROOT:-/mnt/Xsky/zqb/TCGA_WSI_feature_bank/COADREAD/preprocess}
 COADREAD_FEATURE_ROOT=${COADREAD_FEATURE_ROOT:-/mnt/Xsky/zqb/TCGA_WSI_feature_bank/COADREAD/features}
 WSI_ROOT=${WSI_ROOT:-/mnt/Archive/Dataset/GDC_DATA/GDC_DATA}
@@ -77,7 +78,7 @@ run_parallel_stage() {
 
 run_patch_shard() {
   local shard="$1"
-  "$PY" scripts/00_extract_patches.py \
+  "$PY" scripts/step_01_extract_patches.py \
     --cohort_csv "$COADREAD_CSV" \
     --output_root "$COADREAD_PATCH_ROOT" \
     --backend trident \
@@ -94,15 +95,16 @@ run_patch_shard() {
 
 run_feature_shard() {
   local shard="$1"
-  "$PY" scripts/01_extract_features.py \
+  "$PY" scripts/step_02_extract_features.py \
     --backend trident \
-    --mode all \
+    --mode full \
     --encoder "$ENCODER" \
     --cohort_csv "$COADREAD_CSV" \
     --patch_root "$COADREAD_PATCH_ROOT" \
     --feature_root "$COADREAD_FEATURE_ROOT" \
     --wsi_root "$WSI_ROOT" \
     --trident_python "$PY" \
+    --trident_repo "$TRIDENT_REPO" \
     --gpu 0 \
     --batch_size "$FEATURE_BATCH_SIZE" \
     --save_dtype float32 \
@@ -117,26 +119,26 @@ write_coadread_extracted_csv_and_splits() {
 from pathlib import Path
 import pandas as pd
 
-cohort_csv = Path("data/csvs/TCGA_COADREAD_survival_dx.csv")
-out_csv = Path("data/csvs/TCGA_COADREAD_survival_dx_extracted.csv")
+cohort_csv = Path("metadata/csvs/TCGA_COADREAD_survival_dx.csv")
+out_csv = Path("metadata/csvs/TCGA_COADREAD_survival_dx_extracted.csv")
 feature_base = Path("/mnt/Xsky/zqb/TCGA_WSI_feature_bank/COADREAD/features/uni2")
 df = pd.read_csv(cohort_csv)
 
 def has_all_features(slide_id: object) -> bool:
     stem = str(slide_id)
-    return all((feature_base / f"{stem}_{suffix}.pt").exists() for suffix in ("light", "medium", "full", "coords"))
+    return (feature_base / "features" / f"{stem}.pt").exists() and (feature_base / "coords" / f"{stem}.pt").exists()
 
 mask = df["slide_submitter_id"].map(has_all_features)
 extracted = df.loc[mask].copy()
 missing = df.loc[~mask, ["case_submitter_id", "slide_submitter_id", "file_name"]].copy()
 out_csv.parent.mkdir(parents=True, exist_ok=True)
 extracted.to_csv(out_csv, index=False)
-missing.to_csv(Path("data/csvs/TCGA_COADREAD_survival_dx_missing_features.csv"), index=False)
+missing.to_csv(Path("metadata/csvs/TCGA_COADREAD_survival_dx_missing_features.csv"), index=False)
 
-config = Path("configs/dataset/coadread.yaml")
+config = Path("trainer/configs/dataset/coadread.yaml")
 config.write_text(
     'cohort: "COADREAD"\n'
-    'cohort_csv: "/mnt/Xsky/zqb/TDAE/data/csvs/TCGA_COADREAD_survival_dx_extracted.csv"\n'
+    'cohort_csv: "/mnt/Xsky/zqb/TDAE/metadata/csvs/TCGA_COADREAD_survival_dx_extracted.csv"\n'
     'tasks:\n'
     '  classification:\n'
     '    enabled: false\n'
@@ -161,7 +163,7 @@ print(f"coadread_usable_survival_rows={len(usable)} cases={usable.case_submitter
 if len(usable) < 50:
     raise SystemExit("Too few usable COADREAD survival rows after feature extraction; refusing to launch survival.")
 PY
-  "$PY" scripts/generate_splits.py --cohort COADREAD --task survival --n_splits 5 --seed 42
+  "$PY" scripts/step_03_generate_splits.py --cohort COADREAD --task survival --n_splits 5 --seed 42
 }
 
 run_survival_cohort() {
@@ -172,7 +174,7 @@ run_survival_cohort() {
   COHORT="$cohort" \
   TASK=survival \
   ENCODER="$ENCODER" \
-  CONFIG=configs/brca_uni2_phase0.yaml \
+  CONFIG=trainer/configs/brca_uni2_mil.yaml \
   EXPERIMENT_TAG="$SURVIVAL_EXPERIMENT_TAG" \
   GPUS="${GPUS[*]}" \
   FOLDS="$FOLDS_VALUE" \

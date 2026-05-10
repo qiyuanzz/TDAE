@@ -1,0 +1,17 @@
+cohort: "GBMLGG"
+cohort_csv: "/mnt/Xsky/zqb/TDAE/metadata/csvs/TCGA_GBMLGG_survival_dx_extracted.csv"
+tasks:
+  classification:
+    enabled: false
+    task: "classification"
+    label_column: "cancer_code"
+    include_labels:
+      - "GBM"
+      - "LGG"
+    label_aliases:
+      GBM: "GBM"
+      LGG: "LGG"
+  survival:
+    enabled: true
+    task: "survival"
+    label_column: "cancer_code"

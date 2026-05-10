@@ -10,7 +10,7 @@ import _bootstrap  # noqa: F401
 import h5py
 import torch
 
-from data.utils import coords_to_grid, ensure_columns, read_table
+from trainer.io import coords_to_grid, ensure_columns, read_table
 
 
 def simple_tissue_coords(wsi_path: str, patch_size: int, max_patches: int | None = None) -> torch.Tensor:

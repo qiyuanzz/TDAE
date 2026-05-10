@@ -12,15 +12,14 @@ import torch.nn as nn
 class EncoderSpec:
     name: str
     d_full: int
-    d_light: int
     model_path: str | None = None
 
 
 ENCODER_SPECS = {
-    "ctranspath": EncoderSpec("ctranspath", d_full=768, d_light=96, model_path="/mnt/Xsky/public_model_zoo/CHIEF/model_weight/CHIEF_CTransPath.pth"),
-    "conch_v15": EncoderSpec("conch_v15", d_full=768, d_light=1024, model_path="/mnt/Xsky/models/PFM/conchv1_5"),
-    "uni2": EncoderSpec("uni2", d_full=1536, d_light=1536, model_path="/mnt/Xsky/models/PFM/UNI2-h"),
-    "virchow2": EncoderSpec("virchow2", d_full=1280, d_light=1280, model_path="/mnt/Xsky/models/PFM/Virchow2"),
+    "ctranspath": EncoderSpec("ctranspath", d_full=768, model_path="/mnt/Xsky/public_model_zoo/CHIEF/model_weight/CHIEF_CTransPath.pth"),
+    "conch_v15": EncoderSpec("conch_v15", d_full=768, model_path="/mnt/Xsky/models/PFM/conchv1_5"),
+    "uni2": EncoderSpec("uni2", d_full=1536, model_path="/mnt/Xsky/models/PFM/UNI2-h"),
+    "virchow2": EncoderSpec("virchow2", d_full=1280, model_path="/mnt/Xsky/models/PFM/Virchow2"),
 }
 
 
@@ -34,34 +33,6 @@ class IdentityEncoder(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         pooled = x.float().mean(dim=(-1, -2))
         return self.proj(pooled)
-
-
-class LightEncoderWrapper(nn.Module):
-    """Wrap a ViT-like encoder and return the post-norm CLS token after the first
-    ``truncate_layer`` blocks. Applying ``model.norm`` keeps the intermediate
-    feature in the same numerical space as Trident's full encoder output."""
-
-    def __init__(self, base_model: nn.Module, truncate_layer: int = 3) -> None:
-        super().__init__()
-        self.base_model = base_model
-        self.truncate_layer = int(truncate_layer)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        model = self.base_model
-        if not all(hasattr(model, attr) for attr in ("patch_embed", "blocks")):
-            return model(x)
-        x = model.patch_embed(x)
-        cls_token = model.cls_token.expand(x.shape[0], -1, -1)
-        x = torch.cat((cls_token, x), dim=1)
-        if hasattr(model, "pos_embed"):
-            x = x + model.pos_embed[:, : x.shape[1]]
-        if hasattr(model, "pos_drop"):
-            x = model.pos_drop(x)
-        for block in model.blocks[: self.truncate_layer]:
-            x = block(x)
-        if hasattr(model, "norm"):
-            x = model.norm(x)
-        return x[:, 0]
 
 
 def get_encoder_spec(name: str) -> EncoderSpec:

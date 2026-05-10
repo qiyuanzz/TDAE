@@ -39,6 +39,6 @@ run_cohort() {
   echo "[$(date)] done cohort=${cohort} experiment=${experiment_tag}"
 }
 
-run_cohort BRCA configs/brca_uni2_phase0.yaml brca_uni2_abmil_random_keep_nll20_seedlayout_v2
-run_cohort GBMLGG configs/default.yaml gbmlgg_uni2_abmil_random_keep_nll20_seedlayout_v2
-run_cohort COADREAD configs/default.yaml coadread_uni2_abmil_random_keep_nll20_seedlayout_v2
+run_cohort BRCA trainer/configs/brca_uni2_mil.yaml brca_uni2_abmil_random_keep_nll20_seedlayout_v2
+run_cohort GBMLGG trainer/configs/default.yaml gbmlgg_uni2_abmil_random_keep_nll20_seedlayout_v2
+run_cohort COADREAD trainer/configs/default.yaml coadread_uni2_abmil_random_keep_nll20_seedlayout_v2

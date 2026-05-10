@@ -7,7 +7,8 @@ PY=${PY:-/opt/conda/envs/trident/bin/python}
 COHORT=${COHORT:-BRCA}
 TASK=${TASK:-survival}
 ENCODER=${ENCODER:-uni2}
-CONFIG=${CONFIG:-configs/brca_uni2_phase0.yaml}
+CONFIG=${CONFIG:-trainer/configs/brca_uni2_mil.yaml}
+AGGREGATOR=${AGGREGATOR:-abmil}
 EXPERIMENT_TAG=${EXPERIMENT_TAG:-brca_uni2_abmil_random_keep_seed_layout}
 
 GPUS=(${GPUS:-4 5 6 7})
@@ -46,22 +47,23 @@ export OMP_NUM_THREADS="$CPU_THREADS"
 export MKL_NUM_THREADS="$CPU_THREADS"
 export OPENBLAS_NUM_THREADS="$CPU_THREADS"
 export NUMEXPR_NUM_THREADS="$CPU_THREADS"
-export TDAE_TORCH_NUM_THREADS="$CPU_THREADS"
+export MIL_TORCH_NUM_THREADS="$CPU_THREADS"
 
 keep_dir_name() {
   local keep="$1"
-  python3 - "$keep" "$SURVIVAL_BATCH_SIZE" "$LR" <<'PY'
+  python3 - "$keep" "$SURVIVAL_BATCH_SIZE" "$LR" "$AGGREGATOR" <<'PY'
 import sys
 
 keep = float(sys.argv[1])
 gc = int(sys.argv[2])
 lr = float(sys.argv[3])
+aggregator = sys.argv[4].upper()
 
 def float_tag(value):
     text = f"{value:.0e}" if 0 < abs(value) < 1e-3 else f"{value:.6g}"
     return text.replace("e-0", "e-").replace("e+0", "e").replace("e+", "e")
 
-print(f"wsi_ABMIL_keep_{keep:.6g}_gc_{gc}_lr_{float_tag(lr)}")
+print(f"wsi_{aggregator}_keep_{keep:.6g}_gc_{gc}_lr_{float_tag(lr)}")
 PY
 }
 
@@ -135,7 +137,7 @@ run_seed() {
       local seed_log="$seed_dir/seed.log"
       local fold_dir="$seed_dir/fold_${fold}"
       local summary_path="$fold_dir/summary.json"
-      local run_tag="abmil_random_keep${keep}_seed${seed}_fold${fold}"
+      local run_tag="${AGGREGATOR}_random_keep${keep}_seed${seed}_fold${fold}"
       local cache_args=()
       if should_disable_cache "$keep"; then
         cache_args=(--no_cache_features)
@@ -148,11 +150,12 @@ run_seed() {
 
       mkdir -p "$fold_dir"
       echo "[$(date)] launched name=$run_tag fold=$fold keep=$keep drop=$drop gpu=$gpu cache_args=${cache_args[*]:-cache_on}" >> "$seed_log"
-      CUDA_VISIBLE_DEVICES="$gpu" "$PY" scripts/04_train_abmil_random_drop.py \
+      CUDA_VISIBLE_DEVICES="$gpu" "$PY" scripts/step_04_train.py \
         --config "$CONFIG" \
         --cohort "$COHORT" \
         --task "$TASK" \
         --encoder "$ENCODER" \
+        --aggregator "$AGGREGATOR" \
         --fold "$fold" \
         --patch_drop_ratio "$drop" \
         --patch_drop_seed "$seed" \

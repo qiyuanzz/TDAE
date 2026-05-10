@@ -1,0 +1,4 @@
+encoder_name: "conch_v15"
+model_path: "/mnt/Xsky/models/PFM/conchv1_5"
+d_full: 768
+full_batch_size: 128

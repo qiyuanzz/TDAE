@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
 import torch
 
-from data.utils import ensure_columns, read_table, save_feature_triplet
+from trainer.io import ensure_columns, read_table, save_feature_triplet
 from models.encoder_wrapper import build_encoder
 
 
@@ -26,12 +27,8 @@ def _save_mode(feature_root: str, encoder: str, slide_id: str, mode: str, feats:
     kwargs = {"coords": coords}
     if mode == "full":
         kwargs["full_feats"] = feats
-    elif mode == "medium":
-        kwargs["medium_feats"] = feats
-    elif mode == "light":
-        kwargs["light_feats"] = feats
     else:
-        raise ValueError(f"Unsupported mode: {mode}")
+        raise ValueError("Only --mode full is supported.")
     save_feature_triplet(feature_root, encoder, slide_id, **kwargs)
 
 
@@ -60,22 +57,14 @@ def _materialize_sharded_cohort(args: argparse.Namespace, trident_job_dir: Path)
 
 
 def _run_smoke_or_local(args: argparse.Namespace) -> None:
-    if args.mode == "all":
-        raise ValueError("--mode all is only supported with --backend trident.")
+    if args.mode != "full":
+        raise ValueError("Only --mode full is supported.")
     cohort = read_table(args.cohort_csv)
     ensure_columns(cohort, ["slide_submitter_id"], "cohort_csv")
     cohort = _apply_slide_shard(cohort, args.num_shards, args.shard_index)
-    if args.mode == "light":
-        smoke_dim = 8
-        layer = args.truncate_layer
-    elif args.mode == "medium":
-        smoke_dim = 16
-        layer = args.medium_layer
-    else:
-        smoke_dim = 16
-        layer = args.medium_layer
+    smoke_dim = 16
     encoder_name = "identity" if args.smoke else args.encoder
-    encoder = build_encoder(encoder_name, mode=args.mode, truncate_layer=layer, smoke_dim=smoke_dim)
+    encoder = build_encoder(encoder_name, mode=args.mode, truncate_layer=args.truncate_layer, smoke_dim=smoke_dim)
     device = torch.device(args.device if args.device == "cuda" and torch.cuda.is_available() else "cpu")
     encoder.eval().to(device)
     for _, row in cohort.drop_duplicates("slide_submitter_id").iterrows():
@@ -109,14 +98,12 @@ def _run_trident(args: argparse.Namespace) -> None:
         args.feature_root,
         "--encoder",
         args.trident_encoder or args.encoder,
-        "--tdae_encoder",
+        "--output_encoder",
         args.encoder,
         "--mode",
         args.mode,
         "--truncate_layer",
         str(args.truncate_layer),
-        "--medium_layer",
-        str(args.medium_layer),
         "--patch_size",
         str(args.patch_size),
         "--mag",
@@ -131,35 +118,37 @@ def _run_trident(args: argparse.Namespace) -> None:
         str(args.batch_size),
         "--save_dtype",
         args.save_dtype,
+        "--trident_repo",
+        args.trident_repo,
     ]
-    if args.light_pca_path:
-        cmd.extend(["--light_pca_path", args.light_pca_path])
     if args.patch_encoder_ckpt_path:
         cmd.extend(["--patch_encoder_ckpt_path", args.patch_encoder_ckpt_path])
     if args.max_workers is not None:
         cmd.extend(["--max_workers", str(args.max_workers)])
     if args.skip_errors:
         cmd.append("--skip_errors")
-    subprocess.run(cmd, check=True)
+    env = os.environ.copy()
+    if args.trident_repo:
+        env["PYTHONPATH"] = f"{args.trident_repo}:{env.get('PYTHONPATH', '')}" if env.get("PYTHONPATH") else args.trident_repo
+    subprocess.run(cmd, check=True, env=env)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Extract one TDAE feature level from existing patch coords.")
+    parser = argparse.ArgumentParser(description="Extract full patch features from existing patch coords.")
     parser.add_argument("--encoder", default="uni2")
-    parser.add_argument("--mode", default="full", choices=["light", "medium", "full", "all"])
+    parser.add_argument("--mode", default="full", choices=["full"])
     parser.add_argument("--truncate_layer", type=int, default=3)
-    parser.add_argument("--medium_layer", type=int, default=12)
     parser.add_argument("--cohort_csv", required=True)
     parser.add_argument("--patch_root", required=True)
     parser.add_argument("--feature_root", required=True)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--save_dtype", choices=["float16", "float32"], default="float32")
-    parser.add_argument("--light_pca_path", default=None, help="Optional PCA model for light feature compression.")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--smoke", action="store_true", help="Generate deterministic fixture features instead of loading a real encoder.")
     parser.add_argument("--backend", choices=["trident", "local"], default="trident")
     parser.add_argument("--wsi_root", default="/mnt/Archive/Dataset/GDC_DATA/GDC_DATA")
     parser.add_argument("--trident_python", default="/opt/conda/envs/trident/bin/python")
+    parser.add_argument("--trident_repo", default="/mnt/Xsky/zqb/TRIDENT", help="Original Trident repository to import before any installed package.")
     parser.add_argument("--trident_job_dir", default=None)
     parser.add_argument("--trident_encoder", default=None, help="Override Trident encoder name, e.g. uni_v2.")
     parser.add_argument("--patch_encoder_ckpt_path", default=None)

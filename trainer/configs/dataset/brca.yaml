@@ -1,0 +1,17 @@
+cohort: "BRCA"
+cohort_csv: "/mnt/Xsky/zqb/TDAE/metadata/csvs/TCGA_BRCA_survival_dx_extracted.csv"
+tasks:
+  classification:
+    enabled: false
+    task: "classification"
+    label_column: "primary_diagnosis"
+    include_labels:
+      - "Infiltrating duct carcinoma, NOS"
+      - "Lobular carcinoma, NOS"
+    label_aliases:
+      "Infiltrating duct carcinoma, NOS": "IDC"
+      "Lobular carcinoma, NOS": "ILC"
+  survival:
+    enabled: true
+    task: "survival"
+    label_column: "primary_diagnosis"
