@@ -64,7 +64,7 @@ metadata/preprocess/
 metadata/splits/**/*backup*/
 metadata/splits/**/*_backup_*/
 metadata/splits/**/*backup*
-metadata
+metadata/
 
 # Internal tests/smoke artifacts
 tests/

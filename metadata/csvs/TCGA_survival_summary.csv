@@ -1,6 +1,0 @@
-cohort_csv,output_csv,input_rows,input_cases,survival_rows,primary_dx_rows,output_rows,output_cases,output_event_rows,output_event_cases
-TCGA_BLCA.csv,TCGA_BLCA_survival_dx.csv,578,249,569,290,286,232,117,94
-TCGA_BRCA.csv,TCGA_BRCA_survival.csv,2809,991,2753,1024,1002,937,102,101
-TCGA_GBMLGG.csv,TCGA_GBMLGG_survival_dx.csv,1786,654,1781,1212,1210,632,553,265
-TCGA_LUAD.csv,TCGA_LUAD_survival_dx.csv,1191,389,1179,404,400,352,147,109
-TCGA_UCEC.csv,TCGA_UCEC_survival_dx.csv,1166,469,1159,488,486,432,52,51
